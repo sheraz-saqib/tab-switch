@@ -28,8 +28,9 @@ jobs:
           [[ "$GITHUB_REF_TYPE" == tag ]] || V="0.0.0-dev"
           VERSION="$V" ./build.sh release
 
+      # GitHub only supports attestations on public repos (for personal accounts).
       - name: Attest build provenance
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && !github.event.repository.private
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: build/TabSwitch-*.zip
