@@ -37,13 +37,21 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-# Hardened runtime, ad-hoc identity (no paid Apple Developer ID). Set SIGN_ID to use a real one.
+# Stable local identity if present (easy-finder/scripts/make-cert.sh creates it): macOS then keeps the
+# Accessibility / Screen Recording grants across rebuilds. Otherwise ad-hoc. Set SIGN_ID for a real Developer ID.
+if [[ -z "${SIGN_ID:-}" ]] && security find-certificate -c "Easy Finder Dev" >/dev/null 2>&1; then SIGN_ID="Easy Finder Dev"; fi
 codesign --force --options runtime --timestamp=none --sign "${SIGN_ID:--}" "$APP"
 codesign --verify --strict "$APP"
 echo "Built $APP ($VERSION)"
 
 case "${1:-}" in
   install)
+    # An ad-hoc signature changes every build, so old grants go stale (toggle shows ON but doesn't apply).
+    # Reset them so macOS asks fresh on launch.
+    if [[ -z "${SIGN_ID:-}" ]]; then
+      tccutil reset Accessibility com.sheraz.tabswitch >/dev/null 2>&1 || true
+      tccutil reset ScreenCapture com.sheraz.tabswitch >/dev/null 2>&1 || true
+    fi
     pkill -x TabSwitch || true
     rm -rf /Applications/TabSwitch.app
     cp -R "$APP" /Applications/
