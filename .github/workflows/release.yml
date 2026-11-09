@@ -1,0 +1,43 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    permissions:
+      contents: write      # create the GitHub release
+      id-token: write      # sign build provenance
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Self-test
+        run: swift build && .build/debug/TabSwitch selftest
+
+      - name: Build app
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == tag ]] || V="0.0.0-dev"
+          VERSION="$V" ./build.sh release
+
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: build/TabSwitch-*.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" build/TabSwitch-*.zip build/TabSwitch-*.zip.sha256 \
+            --title "TabSwitch $GITHUB_REF_NAME" --generate-notes
