@@ -89,6 +89,11 @@ final class Switcher: NSObject, NSWindowDelegate {
         model.searching = false
         model.selected = items.count > 1 ? 1 : 0
         isOpen = true
+        // Start capturing now, during the show delay, so the panel mostly appears with fresh thumbnails
+        // instead of showing last time's and then swapping them.
+        if Prefs.style == "thumbnails" {
+            Thumbs.capture(Set(items.map(\.wid)), maxPixels: Prefs.thumbSize) { [weak self] id, img in self?.model.thumbs[id] = img }
+        }
         // Small delay: a quick ⌥⇥ tap switches to the previous window without flashing the UI.
         let t = DispatchWorkItem { [weak self] in self?.show() }
         showTask = t
@@ -109,9 +114,6 @@ final class Switcher: NSObject, NSWindowDelegate {
                               width: size.width, height: size.height), display: true)
         panel.orderFrontRegardless()
         panel.makeKey()
-        if model.style == "thumbnails" {
-            Thumbs.capture(ids, maxPixels: Prefs.thumbSize) { [weak self] id, img in self?.model.thumbs[id] = img }
-        }
     }
 
     func move(_ d: Int) {
@@ -282,11 +284,14 @@ struct Cell: View {
                         Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fit)
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                             .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+                            .id(ObjectIdentifier(thumb)) // new image = new view, so it cross-fades
+                            .transition(.opacity)
                     } else {
-                        icon(64)
+                        icon(64).transition(.opacity)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .animation(.easeOut(duration: 0.18), value: thumb.map(ObjectIdentifier.init))
                 HStack(spacing: 6) {
                     icon(16)
                     Text(w.title).font(.caption).lineLimit(1)
