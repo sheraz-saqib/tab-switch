@@ -45,8 +45,8 @@ macOS <kbd>⌘</kbd><kbd>⇥</kbd> switches between **apps**. If you have three 
 
 ## Install
 
-1. Download `TabSwitch-x.y.z.zip` from the [latest release](../../releases/latest) and unzip it.
-2. Move **TabSwitch.app** to **Applications**.
+1. Download [**TabSwitch.dmg**](../../releases/latest/download/TabSwitch.dmg) from the latest release and open it.
+2. Drag **TabSwitch.app** to **Applications**.
 3. Open it. macOS will block it the first time, because the app isn't notarized by Apple (see [why](#why-does-macos-warn-me)).
    Go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
 4. Grant two permissions when asked:
@@ -111,15 +111,16 @@ TabSwitch needs strong permissions, so this section explains what it does with t
 - **Verifiable builds:** releases are built by [GitHub Actions](.github/workflows/release.yml) from the tagged source, not on a personal machine. Each release includes a SHA-256 checksum and a signed [build provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations). Verify a download with:
 
 ```bash
-shasum -a 256 -c TabSwitch-x.y.z.zip.sha256
-gh attestation verify TabSwitch-x.y.z.zip --repo <owner>/<repo>
+shasum -a 256 -c checksums.sha256 --ignore-missing
+gh attestation verify TabSwitch.dmg --repo <owner>/<repo>
 ```
 
-Two private macOS APIs are used, the same ones other window managers use:
+A few private macOS APIs are used, the same ones other window managers use:
 
 | API | Purpose |
 |---|---|
 | `_AXUIElementGetWindow` | Matches an accessibility window to its window ID, for thumbnails and ordering |
+| `_SLPSSetFrontProcessWithOptions`, `SLPSPostEventRecordTo` | Brings only the chosen window to the front, not every window of that app |
 | `CGSSetSymbolicHotKeyEnabled` | Only used if you choose ⌘ as the trigger: turns off the system ⌘⇥ switcher. It is turned back on when TabSwitch quits |
 
 ### Why does macOS warn me?
@@ -134,7 +135,7 @@ You need macOS 14 or later and the Xcode Command Line Tools (`xcode-select --ins
 git clone https://github.com/<owner>/<repo>.git && cd <repo>
 ./build.sh            # -> build/TabSwitch.app
 ./build.sh install    # build, copy to /Applications, launch
-./build.sh release    # build + zip + sha256
+./build.sh release    # build + zip + dmg + sha256
 swift build && .build/debug/TabSwitch selftest
 ```
 

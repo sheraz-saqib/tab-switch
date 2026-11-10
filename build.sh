@@ -1,7 +1,7 @@
 #!/bin/bash
 # ./build.sh           -> build/TabSwitch.app
 # ./build.sh install   -> also copy to /Applications and launch
-# ./build.sh release   -> also build/TabSwitch-<version>.zip + .sha256
+# ./build.sh release   -> also build/TabSwitch-<version>.zip + build/TabSwitch.dmg + checksums.sha256
 set -euo pipefail
 cd "$(dirname "$0")"
 VERSION="${VERSION:-1.0.0}"
@@ -59,6 +59,12 @@ case "${1:-}" in
   release)
     ZIP="build/TabSwitch-${VERSION}.zip"
     ditto -c -k --keepParent "$APP" "$ZIP"
-    (cd build && shasum -a 256 "$(basename "$ZIP")" > "$(basename "$ZIP").sha256")
-    cat "$ZIP.sha256" ;;
+    # Drag-to-install DMG with a stable name (releases/latest/download/TabSwitch.dmg).
+    rm -rf build/dmg build/TabSwitch.dmg; mkdir -p build/dmg
+    cp -R "$APP" build/dmg/
+    ln -s /Applications build/dmg/Applications
+    hdiutil create -volname "TabSwitch" -srcfolder build/dmg -ov -format UDZO build/TabSwitch.dmg >/dev/null
+    rm -rf build/dmg
+    (cd build && shasum -a 256 "$(basename "$ZIP")" TabSwitch.dmg > checksums.sha256)
+    cat build/checksums.sha256 ;;
 esac

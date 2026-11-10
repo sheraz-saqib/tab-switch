@@ -34,12 +34,18 @@ jobs:
         continue-on-error: true   # GitHub's attestation API is occasionally flaky; don't block the release
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: build/TabSwitch-*.zip
+          subject-path: |
+            build/TabSwitch-*.zip
+            build/TabSwitch.dmg
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" build/TabSwitch-*.zip build/TabSwitch-*.zip.sha256 \
-            --title "TabSwitch $GITHUB_REF_NAME" --generate-notes
+          files="build/TabSwitch.dmg $(ls build/TabSwitch-*.zip) build/checksums.sha256"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" $files --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" $files --title "TabSwitch $GITHUB_REF_NAME" --generate-notes
+          fi

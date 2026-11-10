@@ -6,6 +6,14 @@ import ScreenCaptureKit
 @_silgen_name("_AXUIElementGetWindow") @discardableResult
 func _AXUIElementGetWindow(_ el: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
 
+// Private SkyLight calls (same as AltTab): make one window front + key without raising the app's other windows.
+@_silgen_name("GetProcessForPID") @discardableResult
+func GetProcessForPID(_ pid: pid_t, _ psn: UnsafeMutablePointer<ProcessSerialNumber>) -> OSStatus
+@_silgen_name("_SLPSSetFrontProcessWithOptions") @discardableResult
+func _SLPSSetFrontProcessWithOptions(_ psn: UnsafeMutablePointer<ProcessSerialNumber>, _ wid: CGWindowID, _ mode: UInt32) -> CGError
+@_silgen_name("SLPSPostEventRecordTo") @discardableResult
+func SLPSPostEventRecordTo(_ psn: UnsafeMutablePointer<ProcessSerialNumber>, _ bytes: UnsafeMutablePointer<UInt8>) -> CGError
+
 extension AXUIElement {
     func attr<T>(_ name: String) -> T? {
         var v: CFTypeRef?
@@ -93,10 +101,31 @@ enum Windows {
     static func focus(_ w: WinItem) {
         if w.app.isHidden { w.app.unhide() }
         if w.minimized { w.ax.set(kAXMinimizedAttribute, false) }
-        AXUIElementCreateApplication(w.app.processIdentifier).set(kAXFrontmostAttribute, true)
-        w.ax.set(kAXMainAttribute, true)
+        guard w.wid != 0 else {  // no window id: fall back to plain app activation
+            w.app.activate()
+            w.ax.perform(kAXRaiseAction)
+            return
+        }
+        // Activating the app (AXFrontmost / NSRunningApplication.activate) brings ALL its windows forward,
+        // e.g. both WhatsApp windows. Instead: front-process this one window, make it key, raise it.
+        var psn = ProcessSerialNumber()
+        GetProcessForPID(w.app.processIdentifier, &psn)
+        _SLPSSetFrontProcessWithOptions(&psn, w.wid, 0x200) // kCPSUserGenerated
+        makeKey(&psn, w.wid)
         w.ax.perform(kAXRaiseAction)
-        w.app.activate()
+    }
+
+    /// Synthetic "make key window" event records, as AltTab does.
+    private static func makeKey(_ psn: inout ProcessSerialNumber, _ wid: CGWindowID) {
+        var bytes = [UInt8](repeating: 0, count: 0xf8)
+        bytes[0x04] = 0xf8
+        bytes[0x3a] = 0x10
+        withUnsafeBytes(of: wid) { for (i, b) in $0.enumerated() { bytes[0x3c + i] = b } }
+        for i in 0x20..<0x30 { bytes[i] = 0xff }
+        bytes[0x08] = 0x01
+        SLPSPostEventRecordTo(&psn, &bytes)
+        bytes[0x08] = 0x02
+        SLPSPostEventRecordTo(&psn, &bytes)
     }
 
     static func act(_ a: WinAction, _ w: WinItem) {
