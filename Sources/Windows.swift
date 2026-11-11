@@ -63,7 +63,10 @@ enum Screens {
 enum Windows {
     // ponytail: AX only sees windows on the current Space (plus minimized/hidden). Other-Space windows
     // need private SkyLight brute-forcing like AltTab does; add if you live in many Spaces.
-    static func list(onlyPid: pid_t? = nil) -> [WinItem] {
+    /// Safe off the main thread (pass `screen` from main). Apps are queried in parallel, so one app that
+    /// is slow to answer AX (e.g. a terminal mid-launch) costs one 0.25s timeout, not one per call.
+    static func list(onlyPid: pid_t? = nil,
+                     screen: CGRect? = Prefs.mouseScreenOnly ? Screens.mouseScreenCG() : nil) -> [WinItem] {
         let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         var rank: [CGWindowID: Int] = [:], bounds: [CGWindowID: CGRect] = [:]
         for (i, w) in info.enumerated() {
@@ -71,28 +74,36 @@ enum Windows {
             rank[id] = i // front-to-back = most recently used first
             if let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b) { bounds[id] = r }
         }
-        let screen = Prefs.mouseScreenOnly ? Screens.mouseScreenCG() : nil
-        let blocked = Prefs.blacklist
-        var out: [(item: WinItem, rank: Int)] = []
-        var n = 0
-        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
-            if let pid = onlyPid, app.processIdentifier != pid { continue }
-            if blocked.contains(app.bundleIdentifier ?? "") { continue }
-            if app.isHidden && !Prefs.showHidden { continue }
-            let axApp = AXUIElementCreateApplication(app.processIdentifier)
-            guard let wins: [AXUIElement] = axApp.attr(kAXWindowsAttribute) else { continue }
+        let blocked = Prefs.blacklist, showHidden = Prefs.showHidden, showMinimized = Prefs.showMinimized
+        let apps = NSWorkspace.shared.runningApplications.filter { app in
+            app.activationPolicy == .regular && (onlyPid == nil || app.processIdentifier == onlyPid)
+                && !blocked.contains(app.bundleIdentifier ?? "") && (showHidden || !app.isHidden)
+        }
+        var perApp = [[(win: AXUIElement, wid: CGWindowID, title: String, mini: Bool)]](repeating: [], count: apps.count)
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: apps.count) { i in
+            let app = apps[i]
+            guard let wins: [AXUIElement] = AXUIElementCreateApplication(app.processIdentifier).attr(kAXWindowsAttribute) else { return }
+            var found: [(win: AXUIElement, wid: CGWindowID, title: String, mini: Bool)] = []
             for w in wins {
                 guard (w.attr(kAXSubroleAttribute) as String?) == kAXStandardWindowSubrole else { continue }
                 let mini = (w.attr(kAXMinimizedAttribute) as Bool?) ?? false
-                if mini && !Prefs.showMinimized { continue }
+                if mini && !showMinimized { continue }
                 var wid: CGWindowID = 0
                 _AXUIElementGetWindow(w, &wid)
                 if let s = screen, let b = bounds[wid], !s.contains(CGPoint(x: b.midX, y: b.midY)) { continue }
-                n += 1
                 let t = (w.attr(kAXTitleAttribute) as String?) ?? ""
-                let item = WinItem(id: wid != 0 ? Int(wid) : -n, wid: wid, ax: w, app: app,
-                                   title: t.isEmpty ? (app.localizedName ?? "") : t, minimized: mini)
-                out.append((item, rank[wid] ?? 1_000_000 + n))
+                found.append((w, wid, t.isEmpty ? (app.localizedName ?? "") : t, mini))
+            }
+            lock.lock(); perApp[i] = found; lock.unlock()
+        }
+        var out: [(item: WinItem, rank: Int)] = []
+        var n = 0
+        for (app, wins) in zip(apps, perApp) {
+            for w in wins {
+                n += 1
+                out.append((WinItem(id: w.wid != 0 ? Int(w.wid) : -n, wid: w.wid, ax: w.win, app: app, title: w.title, minimized: w.mini),
+                            rank[w.wid] ?? 1_000_000 + n))
             }
         }
         return out.sorted { $0.rank < $1.rank }.map(\.item)

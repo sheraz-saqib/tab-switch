@@ -32,6 +32,8 @@ final class HotKeys {
         let pass = Unmanaged.passUnretained(e)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            // The modifier release may have been dropped while the tap was off: don't leave the switcher stuck open.
+            if sw.isOpen && !sw.sticky && !CGEventSource.flagsState(.combinedSessionState).contains(Prefs.modifier) { sw.commit() }
             return pass
         }
         let mod = Prefs.modifier

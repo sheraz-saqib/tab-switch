@@ -52,6 +52,7 @@ final class Switcher: NSObject, NSWindowDelegate {
     private(set) var isOpen = false
     private var showTask: DispatchWorkItem?
     private var onlyPid: pid_t?
+    private var loading = false, pendingCommit = false, gen = 0
 
     /// Keep the panel open after the modifier is released.
     var sticky: Bool { !Prefs.instant || model.searching }
@@ -80,15 +81,38 @@ final class Switcher: NSObject, NSWindowDelegate {
         panel.delegate = self
     }
 
+    /// Returns immediately (called from the event tap): the window list is built off the main thread.
+    /// Tabs / release that arrive before it lands are replayed in `loaded`.
     func open(currentApp: Bool) {
         onlyPid = currentApp ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
-        let items = Windows.list(onlyPid: onlyPid)
-        guard !items.isEmpty else { return }
-        model.items = items
+        model.items = []
         model.query = ""
         model.searching = false
-        model.selected = items.count > 1 ? 1 : 0
+        model.selected = 1
         isOpen = true
+        loading = true
+        pendingCommit = false
+        let opened = DispatchTime.now()
+        fetch { [weak self] items in self?.loaded(items, opened: opened) }
+    }
+
+    private func fetch(_ done: @escaping ([WinItem]) -> Void) {
+        gen += 1
+        let g = gen, pid = onlyPid, screen = Prefs.mouseScreenOnly ? Screens.mouseScreenCG() : nil
+        DispatchQueue.global(qos: .userInteractive).async {
+            let items = Windows.list(onlyPid: pid, screen: screen)
+            DispatchQueue.main.async { [weak self] in if self?.gen == g { done(items) } }
+        }
+    }
+
+    private func loaded(_ items: [WinItem], opened: DispatchTime) {
+        guard isOpen else { return }
+        loading = false
+        guard !items.isEmpty else { close(); return }
+        let n = items.count
+        model.items = items
+        model.selected = n > 1 ? (model.selected % n + n) % n : 0
+        if pendingCommit { commit(); return }
         // Start capturing now, during the show delay, so the panel mostly appears with fresh thumbnails
         // instead of showing last time's and then swapping them.
         if Prefs.style == "thumbnails" {
@@ -97,11 +121,11 @@ final class Switcher: NSObject, NSWindowDelegate {
         // Small delay: a quick ⌥⇥ tap switches to the previous window without flashing the UI.
         let t = DispatchWorkItem { [weak self] in self?.show() }
         showTask = t
-        DispatchQueue.main.asyncAfter(deadline: .now() + Prefs.delay, execute: t)
+        DispatchQueue.main.asyncAfter(deadline: opened + Prefs.delay, execute: t)
     }
 
     private func show() {
-        guard isOpen, !panel.isVisible else { return }
+        guard isOpen, !loading, !panel.isVisible else { return }
         showTask?.cancel()
         let screen = Screens.mouse.visibleFrame
         let (l, size) = Layout.make(count: model.items.count, screen: screen.size, style: Prefs.style, thumb: Prefs.thumbSize)
@@ -111,28 +135,33 @@ final class Switcher: NSObject, NSWindowDelegate {
         Thumbs.cache = Thumbs.cache.filter { ids.contains($0.key) }
         model.thumbs = Thumbs.cache
         panel.setFrame(NSRect(x: screen.midX - size.width / 2, y: screen.midY - size.height / 2,
-                              width: size.width, height: size.height), display: true)
+                              width: size.width, height: size.height), display: false)
+        panel.contentView?.layoutSubtreeIfNeeded() // render this open's items now, not last open's for a frame
+        panel.displayIfNeeded()
         panel.orderFrontRegardless()
         panel.makeKey()
     }
 
     func move(_ d: Int) {
         let n = model.visible.count
-        guard n > 0 else { return }
+        guard n > 0 else { if loading { model.selected += d }; return }
         model.selected = ((model.selected + d) % n + n) % n
     }
 
     func commit() {
         guard isOpen else { return }
+        if loading { pendingCommit = true; return }
         let v = model.visible
         let target = v.indices.contains(model.selected) ? v[model.selected] : nil
         close()
-        if let target { Windows.focus(target) }
+        if let target { DispatchQueue.main.async { Windows.focus(target) } } // let the event tap return first
     }
 
     func close() {
         showTask?.cancel()
+        gen += 1 // drop any in-flight fetch
         isOpen = false
+        loading = false
         panel.orderOut(nil)
     }
 
@@ -147,10 +176,13 @@ final class Switcher: NSObject, NSWindowDelegate {
     }
 
     private func refresh() {
-        guard isOpen else { return }
-        model.items = Windows.list(onlyPid: onlyPid)
-        if model.items.isEmpty { close(); return }
-        model.selected = max(0, min(model.selected, model.visible.count - 1))
+        guard isOpen, !loading else { return }
+        fetch { [weak self] items in
+            guard let self, self.isOpen else { return }
+            self.model.items = items
+            if items.isEmpty { self.close(); return }
+            self.model.selected = max(0, min(self.model.selected, self.model.visible.count - 1))
+        }
     }
 
     /// Keys while open. Modifier+letter = action; plain typing = search (when panel is sticky).
@@ -284,14 +316,13 @@ struct Cell: View {
                         Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fit)
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                             .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
-                            .id(ObjectIdentifier(thumb)) // new image = new view, so it cross-fades
-                            .transition(.opacity)
+                            .transition(.opacity) // fades in only over the app icon; a fresh capture swaps in place
                     } else {
                         icon(64).transition(.opacity)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .animation(.easeOut(duration: 0.18), value: thumb.map(ObjectIdentifier.init))
+                .animation(.easeOut(duration: 0.18), value: thumb != nil)
                 HStack(spacing: 6) {
                     icon(16)
                     Text(w.title).font(.caption).lineLimit(1)
